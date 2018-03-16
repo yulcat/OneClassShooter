@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
+using Random = UnityEngine.Random;
 
 public class Game : MonoBehaviour
 {
@@ -21,13 +23,16 @@ public class Game : MonoBehaviour
     const float Damp = 7f;
     const float BulletSpeed = 0.6f;
     const float FadeSpeed = 2;
+    const float RockMinSpd = 0.1f;
+    const float RockMaxSpd = 0.4f;
+    const float RockRadius = 1.5f;
 
     static float widthScale;
     static Material material;
     static Material fadeMaterial;
     static Vector2 input;
     static RenderTexture currentRt;
-    new static Camera camera;
+    static Camera camera;
 
     readonly List<GetDraw> drawList = new List<GetDraw>();
     readonly List<Tuple<GetSelf, OnUpdate, DrawSelf>> objectList = new List<Tuple<GetSelf, OnUpdate, DrawSelf>>();
@@ -65,7 +70,8 @@ public class Game : MonoBehaviour
 
     IEnumerator UpdateGame()
     {
-        while (true)
+        var spawn = StartCoroutine(SpawnEnemies());
+        while (objectList.Any(o => o.Item1().Item4 == ObjectType.Player))
         {
             fadeMaterial.color = Color.white * (1 - Time.deltaTime * FadeSpeed);
             input.x = Input.GetAxis("Horizontal");
@@ -86,6 +92,24 @@ public class Game : MonoBehaviour
                 objectList[i] = Tuple.Create(nextSelf, obj.Item2, obj.Item3);
             }
             yield return null;
+            objectList.RemoveAll(o => o == null);
+        }
+        StopCoroutine(spawn);
+    }
+
+    IEnumerator SpawnEnemies()
+    {
+        while (true)
+        {
+            if (objectList.All(o => o.Item1().Item4 != ObjectType.Player)) yield return null;
+            var player = objectList.First(o => o.Item1().Item4 == ObjectType.Player);
+            var center = player.Item1().Item1;
+            var direction = Random.insideUnitCircle.normalized;
+            var rockPosition = center - (Vector3) direction * RockRadius;
+            var speed = Random.Range(RockMinSpd, RockMaxSpd);
+            objectList.Add(CreateRock(rockPosition,
+                Quaternion.Euler(0, 0, Random.Range(0, 180)), speed * direction));
+            yield return new WaitForSeconds(1);
         }
     }
 
@@ -120,6 +144,9 @@ public class Game : MonoBehaviour
         if (position.y < -0.5f) position.y += 1;
         var rotation = Quaternion.Lerp(lastRotation,
             Quaternion.Euler(0, 0, Mathf.Rad2Deg * Mathf.Atan2(-velocity.x, velocity.y)), 0.5f);
+
+        if (TestCollision(player).Any(c => c().Item4 == ObjectType.Rock))
+            return null;
 
         if (Input.GetButtonDown("Jump"))
             objectList.Add(CreateMyBullet(position, rotation, velocity));
@@ -164,8 +191,9 @@ public class Game : MonoBehaviour
         var velocity = lastBullet.Item2;
         var rotation = lastBullet.Item3;
         var type = lastBullet.Item4;
-        var lifetime = (float) lastBullet.Item5;
+        var lifetime = lastBullet.Item5;
         lifetime -= lifetime - Time.deltaTime;
+        if (lifetime < 0) return null;
 
         var position = lastPosition + Time.deltaTime * velocity;
         var result = Tuple.Create(position, velocity, rotation, type, lastBullet.Item5, (object) lifetime);
@@ -186,10 +214,61 @@ public class Game : MonoBehaviour
 
     #endregion
 
+    #region Rock
+
+    Tuple<GetSelf, OnUpdate, DrawSelf> CreateRock(Vector3 position, Quaternion rotation, Vector3 velocity)
+    {
+        GetSelf getSelf = () =>
+            Tuple.Create(
+                position,
+                velocity,
+                rotation,
+                ObjectType.Rock,
+                1f / 160,
+                (object) 2f);
+        return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateRock, DrawRock);
+    }
+
+    GetSelf UpdateRock(GetSelf self)
+    {
+        var lastBullet = self();
+        var lastPosition = lastBullet.Item1;
+        var velocity = lastBullet.Item2;
+        var rotation = lastBullet.Item3;
+        var type = lastBullet.Item4;
+        var lifetime = lastBullet.Item5;
+        lifetime -= lifetime - Time.deltaTime;
+
+        if (TestCollision(self).Any(c => c().Item4 == ObjectType.MyBullet))
+            return null;
+
+        var position = lastPosition + Time.deltaTime * velocity;
+        var result = Tuple.Create(position, velocity, rotation, type, lastBullet.Item5, (object) lifetime);
+        return () => result;
+    }
+
+    GetDraw DrawRock(GetSelf getSelf)
+    {
+        var position = getSelf().Item1;
+        var rotation = getSelf().Item3;
+        var scale = (1f / 30) * Vector3.one;
+        var color = Color.red;
+        var verts = new[]
+        {
+            new Vector3(0, -0.7f), new Vector3(-0.5f, -0.2f), new Vector3(-0.5f, 0.2f), new Vector3(0f, 0.7f),
+            new Vector3(0, -0.7f), new Vector3(0.5f, -0.2f), new Vector3(0.5f, 0.2f), new Vector3(0f, 0.7f)
+        };
+        var tuple = Tuple.Create(position, scale, rotation, color, verts);
+        return () => tuple;
+    }
+
+    #endregion
+
     IEnumerable<GetSelf> TestCollision(GetSelf toTest)
     {
         foreach (var obj in objectList)
         {
+            if (obj == null) continue;
             var one = toTest();
             var other = obj.Item1();
             var dist = Vector3.Distance(one.Item1, other.Item1);
