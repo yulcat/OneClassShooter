@@ -19,3 +19,9 @@
 
 # Unity3D Generated File On Crash Reports
 sysinfo.txt
+
+\.idea/\.idea\.OneClassShooter/
+
+Assets/Plugins/
+
+Assets/Plugins\.meta
