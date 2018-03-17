@@ -7,12 +7,13 @@ using Random = UnityEngine.Random;
 
 public class Game : MonoBehaviour
 {
+    [Flags]
     enum ObjectType
     {
-        Player,
-        Rock,
-        EnemyBullet,
-        MyBullet
+        Player = 1,
+        Rock = 2,
+        EnemyBullet = 4,
+        MyBullet = 8
     }
     delegate GetSelf OnUpdate(GetSelf self);
     delegate Tuple<Vector3, Vector3, Quaternion, ObjectType, float, object> GetSelf();
@@ -22,10 +23,13 @@ public class Game : MonoBehaviour
     const float Acceleration = 0.06f;
     const float Damp = 7f;
     const float BulletSpeed = 0.6f;
-    const float FadeSpeed = 2;
+    const float FadeSpeed = 3;
     const float RockMinSpd = 0.1f;
     const float RockMaxSpd = 0.4f;
-    const float RockRadius = 1.5f;
+    const float RockRadius = 2f;
+    const float RockSpawnRate = 5f;
+    const float ShotRate = 10f;
+    const float ShotSpread = 10f;
 
     static float widthScale;
     static Material material;
@@ -73,7 +77,7 @@ public class Game : MonoBehaviour
         var spawn = StartCoroutine(SpawnEnemies());
         while (objectList.Any(o => o.Item1().Item4 == ObjectType.Player))
         {
-            fadeMaterial.color = Color.white * (1 - Time.deltaTime * FadeSpeed);
+            fadeMaterial.color = Color.white * (Mathf.Pow(0.5f, Time.deltaTime * FadeSpeed));
             input.x = Input.GetAxis("Horizontal");
             input.y = Input.GetAxis("Vertical");
             widthScale = (float) Screen.height / Screen.width;
@@ -81,7 +85,6 @@ public class Game : MonoBehaviour
             for (var i = 0; i < objectList.Count; i++)
             {
                 var obj = objectList[i];
-                if (obj == null) continue;
                 var nextSelf = obj.Item2(obj.Item1);
                 if (nextSelf == null)
                 {
@@ -91,8 +94,8 @@ public class Game : MonoBehaviour
                 drawList.Add(obj.Item3(nextSelf));
                 objectList[i] = Tuple.Create(nextSelf, obj.Item2, obj.Item3);
             }
-            yield return null;
             objectList.RemoveAll(o => o == null);
+            yield return null;
         }
         StopCoroutine(spawn);
     }
@@ -109,7 +112,8 @@ public class Game : MonoBehaviour
             var speed = Random.Range(RockMinSpd, RockMaxSpd);
             objectList.Add(CreateRock(rockPosition,
                 Quaternion.Euler(0, 0, Random.Range(0, 180)), speed * direction));
-            yield return new WaitForSeconds(1);
+            Debug.Log($"Current Object Count : {objectList.Count}");
+            yield return new WaitForSeconds(1 / RockSpawnRate);
         }
     }
 
@@ -124,7 +128,7 @@ public class Game : MonoBehaviour
                 Quaternion.identity,
                 ObjectType.Player,
                 1f / 80,
-                (object) null);
+                (object) 0f);
         return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdatePlayer, DrawPlayer);
     }
 
@@ -135,6 +139,7 @@ public class Game : MonoBehaviour
         var lastVelocity = lastPlayer.Item2;
         var lastRotation = lastPlayer.Item3;
         var type = lastPlayer.Item4;
+        var cooldown = (float) lastPlayer.Item6;
 
         var velocity = lastVelocity * (1 - Time.deltaTime * Damp) + (Vector3) (Acceleration * input);
         var position = lastPosition + Time.deltaTime * velocity;
@@ -145,13 +150,17 @@ public class Game : MonoBehaviour
         var rotation = Quaternion.Lerp(lastRotation,
             Quaternion.Euler(0, 0, Mathf.Rad2Deg * Mathf.Atan2(-velocity.x, velocity.y)), 0.5f);
 
-        if (TestCollision(player).Any(c => c().Item4 == ObjectType.Rock))
+        if (TestCollision(player, ObjectType.Rock).Any())
             return null;
 
-        if (Input.GetButtonDown("Jump"))
+        cooldown = Mathf.Max(0f, cooldown - Time.deltaTime);
+        if (Input.GetButton("Jump") && cooldown <= 0)
+        {
             objectList.Add(CreateMyBullet(position, rotation, velocity));
+            cooldown += 1 / ShotRate;
+        }
 
-        var result = Tuple.Create(position, velocity, rotation, type, lastPlayer.Item5, (object) null);
+        var result = Tuple.Create(position, velocity, rotation, type, lastPlayer.Item5, (object) cooldown);
         return () => result;
     }
 
@@ -173,14 +182,15 @@ public class Game : MonoBehaviour
 
     Tuple<GetSelf, OnUpdate, DrawSelf> CreateMyBullet(Vector3 position, Quaternion rotation, Vector3 velocity)
     {
+        var bulletDirection = rotation * Quaternion.Euler(0, 0, Random.Range(-ShotSpread, ShotSpread));
         GetSelf getSelf = () =>
             Tuple.Create(
                 position,
-                rotation * Vector3.up * BulletSpeed + velocity,
-                rotation,
+                bulletDirection * Vector3.up * BulletSpeed + velocity,
+                bulletDirection,
                 ObjectType.MyBullet,
                 1f / 160,
-                (object) 2f);
+                (object) 1f);
         return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateMyBullet, DrawMyBullet);
     }
 
@@ -191,8 +201,8 @@ public class Game : MonoBehaviour
         var velocity = lastBullet.Item2;
         var rotation = lastBullet.Item3;
         var type = lastBullet.Item4;
-        var lifetime = lastBullet.Item5;
-        lifetime -= lifetime - Time.deltaTime;
+        var lifetime = (float) lastBullet.Item6;
+        lifetime = lifetime - Time.deltaTime;
         if (lifetime < 0) return null;
 
         var position = lastPosition + Time.deltaTime * velocity;
@@ -225,7 +235,7 @@ public class Game : MonoBehaviour
                 rotation,
                 ObjectType.Rock,
                 1f / 160,
-                (object) 2f);
+                (object) (RockRadius * 2 / velocity.magnitude));
         return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateRock, DrawRock);
     }
 
@@ -236,10 +246,11 @@ public class Game : MonoBehaviour
         var velocity = lastBullet.Item2;
         var rotation = lastBullet.Item3;
         var type = lastBullet.Item4;
-        var lifetime = lastBullet.Item5;
-        lifetime -= lifetime - Time.deltaTime;
+        var lifetime = (float) lastBullet.Item6;
+        lifetime = lifetime - Time.deltaTime;
 
-        if (TestCollision(self).Any(c => c().Item4 == ObjectType.MyBullet))
+        if (lifetime < 0) return null;
+        if (TestCollision(self, ObjectType.MyBullet).Any())
             return null;
 
         var position = lastPosition + Time.deltaTime * velocity;
@@ -264,11 +275,105 @@ public class Game : MonoBehaviour
 
     #endregion
 
-    IEnumerable<GetSelf> TestCollision(GetSelf toTest)
+    #region EnemyBullet
+
+    Tuple<GetSelf, OnUpdate, DrawSelf> CreateEnemyBullet(Vector3 position, Quaternion rotation, Vector3 velocity)
     {
-        foreach (var obj in objectList)
+        GetSelf getSelf = () =>
+            Tuple.Create(
+                position,
+                velocity,
+                rotation,
+                ObjectType.EnemyBullet,
+                1f / 160,
+                (object) 2f);
+        return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateEnemyBullet, DrawEnemyBullet);
+    }
+
+    GetSelf UpdateEnemyBullet(GetSelf self)
+    {
+        var lastBullet = self();
+        var lastPosition = lastBullet.Item1;
+        var velocity = lastBullet.Item2;
+        var rotation = lastBullet.Item3;
+        var type = lastBullet.Item4;
+        var lifetime = lastBullet.Item5;
+        lifetime = lifetime - Time.deltaTime;
+        if (lifetime < 0) return null;
+
+        var position = lastPosition + Time.deltaTime * velocity;
+        var result = Tuple.Create(position, velocity, rotation, type, lastBullet.Item5, (object) lifetime);
+        return () => result;
+    }
+
+    GetDraw DrawEnemyBullet(GetSelf getSelf)
+    {
+        var position = getSelf().Item1;
+        var rotation = getSelf().Item3;
+        var scale = (1f / 30) * Vector3.one;
+        var color = Color.red;
+        var verts = new[]
         {
-            if (obj == null) continue;
+            new Vector3(0, -0.7f), new Vector3(-0.5f, -0.2f), new Vector3(-0.5f, 0.2f), new Vector3(0f, 0.7f),
+            new Vector3(0, -0.7f), new Vector3(0.5f, -0.2f), new Vector3(0.5f, 0.2f), new Vector3(0f, 0.7f)
+        };
+        var tuple = Tuple.Create(position, scale, rotation, color, verts);
+        return () => tuple;
+    }
+
+    #endregion
+
+    #region Particles
+
+    Tuple<GetSelf, OnUpdate, DrawSelf> CreateParticle(Vector3 position, Quaternion rotation, Vector3 velocity)
+    {
+        var bulletDirection = rotation * Quaternion.Euler(0, 0, Random.Range(-ShotSpread, ShotSpread));
+        GetSelf getSelf = () =>
+            Tuple.Create(
+                position,
+                bulletDirection * Vector3.up * BulletSpeed + velocity,
+                bulletDirection,
+                ObjectType.MyBullet,
+                1f / 160,
+                (object) 1f);
+        return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateParticle, DrawParticle);
+    }
+
+    GetSelf UpdateParticle(GetSelf self)
+    {
+        var lastBullet = self();
+        var lastPosition = lastBullet.Item1;
+        var velocity = lastBullet.Item2;
+        var rotation = lastBullet.Item3;
+        var type = lastBullet.Item4;
+        var lifetime = (float) lastBullet.Item6;
+        lifetime = lifetime - Time.deltaTime;
+        if (lifetime < 0) return null;
+
+        var position = lastPosition + Time.deltaTime * velocity;
+        var result = Tuple.Create(position, velocity, rotation, type, lastBullet.Item5, (object) lifetime);
+        return () => result;
+    }
+
+    GetDraw DrawParticle(GetSelf getSelf)
+    {
+        var position = getSelf().Item1;
+        var rotation = getSelf().Item3;
+        var scale = (1f / 80) * Vector3.one;
+        var color = Color.HSVToRGB((float) (getSelf().Item6), 1, 1);
+        var verts = new[]
+            {new Vector3(-0.2f, -0.7f), new Vector3(-0.2f, 0.7f), new Vector3(0.2f, 0.7f), new Vector3(0.2f, -0.7f)};
+        var tuple = Tuple.Create(position, scale, rotation, color, verts);
+        return () => tuple;
+    }
+
+    #endregion
+
+    IEnumerable<GetSelf> TestCollision(GetSelf toTest, ObjectType filter)
+    {
+        foreach (var obj in objectList.Where(o => o != null && (o.Item1().Item4 & filter) != 0))
+        {
+            if (obj.Item1 == null) continue;
             var one = toTest();
             var other = obj.Item1();
             var dist = Vector3.Distance(one.Item1, other.Item1);
