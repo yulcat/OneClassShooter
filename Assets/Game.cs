@@ -13,7 +13,8 @@ public class Game : MonoBehaviour
         Player = 1,
         Rock = 2,
         EnemyBullet = 4,
-        MyBullet = 8
+        MyBullet = 8,
+        Particle = 16
     }
     delegate GetSelf OnUpdate(GetSelf self);
     delegate Tuple<Vector3, Vector3, Quaternion, ObjectType, float, object> GetSelf();
@@ -30,13 +31,20 @@ public class Game : MonoBehaviour
     const float RockSpawnRate = 5f;
     const float ShotRate = 10f;
     const float ShotSpread = 10f;
+    const float RockParticleSpeed = 0.13f;
+    const float RockParticleLife = 1f;
+    const float ParticleAngularSpeed = 300f;
+    const float PlayerParticleSpeed = 0.15f;
+    const float PlayerParticleLife = 2f;
+    const float Gravity = 0.1f;
 
     static float widthScale;
     static Material material;
     static Material fadeMaterial;
     static Vector2 input;
     static RenderTexture currentRt;
-    static Camera camera;
+    static Camera mainCamera;
+    static float lastRenderTime;
 
     readonly List<GetDraw> drawList = new List<GetDraw>();
     readonly List<Tuple<GetSelf, OnUpdate, DrawSelf>> objectList = new List<Tuple<GetSelf, OnUpdate, DrawSelf>>();
@@ -49,8 +57,8 @@ public class Game : MonoBehaviour
         var cams = FindObjectsOfType<Camera>();
         foreach (var cam in cams)
             Destroy(cam.gameObject);
-        camera = go.AddComponent<Camera>();
-        ReadyCamera(camera);
+        mainCamera = go.AddComponent<Camera>();
+        ReadyCamera(mainCamera);
 
         material = new Material(Shader.Find("Sprites/Default"));
         fadeMaterial = new Material(material);
@@ -74,10 +82,9 @@ public class Game : MonoBehaviour
 
     IEnumerator UpdateGame()
     {
-        var spawn = StartCoroutine(SpawnEnemies());
-        while (objectList.Any(o => o.Item1().Item4 == ObjectType.Player))
+        StartCoroutine(SpawnEnemies());
+        while (true)
         {
-            fadeMaterial.color = Color.white * (Mathf.Pow(0.5f, Time.deltaTime * FadeSpeed));
             input.x = Input.GetAxis("Horizontal");
             input.y = Input.GetAxis("Vertical");
             widthScale = (float) Screen.height / Screen.width;
@@ -97,14 +104,17 @@ public class Game : MonoBehaviour
             objectList.RemoveAll(o => o == null);
             yield return null;
         }
-        StopCoroutine(spawn);
     }
 
     IEnumerator SpawnEnemies()
     {
         while (true)
         {
-            if (objectList.All(o => o.Item1().Item4 != ObjectType.Player)) yield return null;
+            if (objectList.All(o => o.Item1().Item4 != ObjectType.Player))
+            {
+                yield return null;
+                continue;
+            }
             var player = objectList.First(o => o.Item1().Item4 == ObjectType.Player);
             var center = player.Item1().Item1;
             var direction = Random.insideUnitCircle.normalized;
@@ -112,7 +122,7 @@ public class Game : MonoBehaviour
             var speed = Random.Range(RockMinSpd, RockMaxSpd);
             objectList.Add(CreateRock(rockPosition,
                 Quaternion.Euler(0, 0, Random.Range(0, 180)), speed * direction));
-            Debug.Log($"Current Object Count : {objectList.Count}");
+//            Debug.Log($"Current Object Count : {objectList.Count}");
             yield return new WaitForSeconds(1 / RockSpawnRate);
         }
     }
@@ -151,7 +161,10 @@ public class Game : MonoBehaviour
             Quaternion.Euler(0, 0, Mathf.Rad2Deg * Mathf.Atan2(-velocity.x, velocity.y)), 0.5f);
 
         if (TestCollision(player, ObjectType.Rock).Any())
+        {
+            CreateParticles(position, PlayerParticleSpeed, PlayerParticleLife, 50, Color.cyan);
             return null;
+        }
 
         cooldown = Mathf.Max(0f, cooldown - Time.deltaTime);
         if (Input.GetButton("Jump") && cooldown <= 0)
@@ -180,6 +193,12 @@ public class Game : MonoBehaviour
 
     #region MyBullet
 
+    // Item1 : Position
+    // Item2 : Velocity
+    // Item3 : Rotation
+    // Item4 : Object Type
+    // Item5 : Collision Radius
+    // Item6 : Lifetime
     Tuple<GetSelf, OnUpdate, DrawSelf> CreateMyBullet(Vector3 position, Quaternion rotation, Vector3 velocity)
     {
         var bulletDirection = rotation * Quaternion.Euler(0, 0, Random.Range(-ShotSpread, ShotSpread));
@@ -226,6 +245,12 @@ public class Game : MonoBehaviour
 
     #region Rock
 
+    // Item1 : Position
+    // Item2 : Velocity
+    // Item3 : Rotation
+    // Item4 : Object Type
+    // Item5 : Collision Radius
+    // Item6 : Lifetime
     Tuple<GetSelf, OnUpdate, DrawSelf> CreateRock(Vector3 position, Quaternion rotation, Vector3 velocity)
     {
         GetSelf getSelf = () =>
@@ -251,7 +276,10 @@ public class Game : MonoBehaviour
 
         if (lifetime < 0) return null;
         if (TestCollision(self, ObjectType.MyBullet).Any())
+        {
+            CreateParticles(lastPosition, RockParticleSpeed, RockParticleLife, 30, Color.red);
             return null;
+        }
 
         var position = lastPosition + Time.deltaTime * velocity;
         var result = Tuple.Create(position, velocity, rotation, type, lastBullet.Item5, (object) lifetime);
@@ -277,6 +305,12 @@ public class Game : MonoBehaviour
 
     #region EnemyBullet
 
+    // Item1 : Position
+    // Item2 : Velocity
+    // Item3 : Rotation
+    // Item4 : Object Type
+    // Item5 : Collision Radius
+    // Item6 : Lifetime
     Tuple<GetSelf, OnUpdate, DrawSelf> CreateEnemyBullet(Vector3 position, Quaternion rotation, Vector3 velocity)
     {
         GetSelf getSelf = () =>
@@ -330,20 +364,28 @@ public class Game : MonoBehaviour
     // Item3 : Rotation
     // Item4 : Object Type
     // Item5 : Collision Radius
-    // Item6 : {[Time, Lifetime], Color}
+    // Item6 : {[Time, Lifetime, Angular velocity], Color}
     Tuple<GetSelf, OnUpdate, DrawSelf> CreateParticle(Vector3 position, Quaternion rotation, Vector3 velocity,
         float lifetime, Color color)
     {
-        var bulletDirection = rotation * Quaternion.Euler(0, 0, Random.Range(-ShotSpread, ShotSpread));
+        var angularVelocity = Random.Range(-ParticleAngularSpeed, ParticleAngularSpeed);
         GetSelf getSelf = () =>
             Tuple.Create(
                 position,
-                bulletDirection * Vector3.up * BulletSpeed + velocity,
-                bulletDirection,
-                ObjectType.MyBullet,
+                velocity,
+                rotation,
+                ObjectType.Particle,
                 1f / 160,
-                (object) Tuple.Create(new Vector2(0, lifetime), color));
+                (object) Tuple.Create(new Vector3(lifetime, lifetime, angularVelocity), color));
         return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateParticle, DrawParticle);
+    }
+
+    void CreateParticles(Vector3 position, float speed, float lifetime, int count, Color color)
+    {
+        var newParticles = Enumerable.Range(0, count).Select(i => CreateParticle(position,
+            Quaternion.Euler(0, 0, Random.Range(0, 180)),
+            Random.insideUnitCircle * speed, lifetime, color));
+        objectList.AddRange(newParticles);
     }
 
     GetSelf UpdateParticle(GetSelf self)
@@ -351,13 +393,14 @@ public class Game : MonoBehaviour
         var lastBullet = self();
         var lastPosition = lastBullet.Item1;
         var velocity = lastBullet.Item2;
-        var rotation = lastBullet.Item3;
+        velocity += Vector3.down * Gravity * Time.deltaTime;
         var type = lastBullet.Item4;
-        var item6 = (Tuple<Vector2, Color>) lastBullet.Item6;
-        var lifetime = item6.Item1.x;
-        lifetime = lifetime - Time.deltaTime;
+
+        var item6 = (Tuple<Vector3, Color>) lastBullet.Item6;
+        var lifetime = item6.Item1.x - Time.deltaTime;
         if (lifetime < 0) return null;
 
+        var rotation = lastBullet.Item3 * Quaternion.Euler(0, 0, Time.deltaTime * item6.Item1.z);
         var position = lastPosition + Time.deltaTime * velocity;
         var result = Tuple.Create(
             position,
@@ -365,7 +408,7 @@ public class Game : MonoBehaviour
             rotation,
             type,
             lastBullet.Item5,
-            (object) Tuple.Create(new Vector2(lifetime, item6.Item1.y), item6.Item2));
+            (object) Tuple.Create(new Vector3(lifetime, item6.Item1.y, item6.Item1.z), item6.Item2));
         return () => result;
     }
 
@@ -373,11 +416,13 @@ public class Game : MonoBehaviour
     {
         var position = getSelf().Item1;
         var rotation = getSelf().Item3;
-        var item6 = (Tuple<Vector2, Color>) getSelf().Item6;
-        var scale = (1f / 80) * Vector3.one;
+        var item6 = (Tuple<Vector3, Color>) getSelf().Item6;
+        var lifeRate = item6.Item1.x / item6.Item1.y;
         var color = item6.Item2;
+        color.a *= lifeRate;
+        var scale = (1f / 80) * Vector3.one;
         var verts = new[]
-            {new Vector3(-0.2f, -0.7f), new Vector3(-0.2f, 0.7f), new Vector3(0.2f, 0.7f), new Vector3(0.2f, -0.7f)};
+            {new Vector3(-0.3f, -0.6f), new Vector3(-0.3f, 0.6f), new Vector3(0.3f, 0.6f), new Vector3(0.3f, -0.6f)};
         var tuple = Tuple.Create(position, scale, rotation, color, verts);
         return () => tuple;
     }
@@ -414,15 +459,17 @@ public class Game : MonoBehaviour
         }
     }
 
-    void OnPreRender() => camera.targetTexture = currentRt;
+    void OnPreRender() => mainCamera.targetTexture = currentRt;
 
     void OnPostRender()
     {
+        fadeMaterial.color = Color.white * (Mathf.Pow(0.5f, (Time.unscaledTime - lastRenderTime) * FadeSpeed));
+        lastRenderTime = Time.unscaledTime;
         var newRt = RenderTexture.GetTemporary(Screen.width, Screen.height);
         var resizeRt = RenderTexture.GetTemporary(Screen.width >> 1, Screen.height >> 1);
         Graphics.Blit(currentRt, resizeRt);
         Graphics.Blit(resizeRt, newRt, fadeMaterial);
-        camera.targetTexture = newRt;
+        mainCamera.targetTexture = newRt;
         currentRt.Release();
         resizeRt.Release();
         currentRt = newRt;
@@ -434,7 +481,7 @@ public class Game : MonoBehaviour
         drawList.ForEach(DrawObject);
         GL.End();
         GL.PopMatrix();
-        camera.targetTexture = null;
+        mainCamera.targetTexture = null;
         Graphics.Blit(currentRt, (RenderTexture) null);
     }
 }
