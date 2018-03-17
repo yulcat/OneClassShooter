@@ -467,9 +467,12 @@ public class Game : MonoBehaviour
         lastRenderTime = Time.unscaledTime;
         var newRt = RenderTexture.GetTemporary(Screen.width, Screen.height);
         var resizeRt = RenderTexture.GetTemporary(Screen.width >> 1, Screen.height >> 1);
+        Graphics.SetRenderTarget(resizeRt);
+        GL.Clear(false, true, Color.black);
+        Graphics.SetRenderTarget(newRt);
+        GL.Clear(true, true, Color.black);
         Graphics.Blit(currentRt, resizeRt);
         Graphics.Blit(resizeRt, newRt, fadeMaterial);
-        mainCamera.targetTexture = newRt;
         currentRt.Release();
         resizeRt.Release();
         currentRt = newRt;
