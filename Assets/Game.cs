@@ -325,7 +325,14 @@ public class Game : MonoBehaviour
 
     #region Particles
 
-    Tuple<GetSelf, OnUpdate, DrawSelf> CreateParticle(Vector3 position, Quaternion rotation, Vector3 velocity)
+    // Item1 : Position
+    // Item2 : Velocity
+    // Item3 : Rotation
+    // Item4 : Object Type
+    // Item5 : Collision Radius
+    // Item6 : {[Time, Lifetime], Color}
+    Tuple<GetSelf, OnUpdate, DrawSelf> CreateParticle(Vector3 position, Quaternion rotation, Vector3 velocity,
+        float lifetime, Color color)
     {
         var bulletDirection = rotation * Quaternion.Euler(0, 0, Random.Range(-ShotSpread, ShotSpread));
         GetSelf getSelf = () =>
@@ -335,7 +342,7 @@ public class Game : MonoBehaviour
                 bulletDirection,
                 ObjectType.MyBullet,
                 1f / 160,
-                (object) 1f);
+                (object) Tuple.Create(new Vector2(0, lifetime), color));
         return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateParticle, DrawParticle);
     }
 
@@ -346,12 +353,19 @@ public class Game : MonoBehaviour
         var velocity = lastBullet.Item2;
         var rotation = lastBullet.Item3;
         var type = lastBullet.Item4;
-        var lifetime = (float) lastBullet.Item6;
+        var item6 = (Tuple<Vector2, Color>) lastBullet.Item6;
+        var lifetime = item6.Item1.x;
         lifetime = lifetime - Time.deltaTime;
         if (lifetime < 0) return null;
 
         var position = lastPosition + Time.deltaTime * velocity;
-        var result = Tuple.Create(position, velocity, rotation, type, lastBullet.Item5, (object) lifetime);
+        var result = Tuple.Create(
+            position,
+            velocity,
+            rotation,
+            type,
+            lastBullet.Item5,
+            (object) Tuple.Create(new Vector2(lifetime, item6.Item1.y), item6.Item2));
         return () => result;
     }
 
@@ -359,8 +373,9 @@ public class Game : MonoBehaviour
     {
         var position = getSelf().Item1;
         var rotation = getSelf().Item3;
+        var item6 = (Tuple<Vector2, Color>) getSelf().Item6;
         var scale = (1f / 80) * Vector3.one;
-        var color = Color.HSVToRGB((float) (getSelf().Item6), 1, 1);
+        var color = item6.Item2;
         var verts = new[]
             {new Vector3(-0.2f, -0.7f), new Vector3(-0.2f, 0.7f), new Vector3(0.2f, 0.7f), new Vector3(0.2f, -0.7f)};
         var tuple = Tuple.Create(position, scale, rotation, color, verts);
