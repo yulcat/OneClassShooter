@@ -19,6 +19,7 @@ public class Game : MonoBehaviour
     delegate GetSelf OnUpdate(GetSelf self);
     delegate Tuple<Vector3, Vector3, Quaternion, ObjectType, float, object> GetSelf();
     delegate Tuple<Vector3, Vector3, Quaternion, Color, Vector3[]> GetDraw();
+    delegate Tuple<GetSelf, OnUpdate, DrawSelf> CreateObject(Vector3 position, Quaternion rotation, Vector3 velocity);
     delegate GetDraw DrawSelf(GetSelf get);
 
     const float Acceleration = 0.06f;
@@ -29,6 +30,7 @@ public class Game : MonoBehaviour
     const float RockMaxSpd = 0.4f;
     const float RockRadius = 2f;
     const float RockSpawnRate = 5f;
+    const float EnemyBulletSpawnRate = 3f;
     const float ShotRate = 10f;
     const float ShotSpread = 10f;
     const float RockParticleSpeed = 0.13f;
@@ -45,6 +47,9 @@ public class Game : MonoBehaviour
     static RenderTexture currentRt;
     static Camera mainCamera;
     static float lastRenderTime;
+    static GUIStyle guiStyle;
+    static float score;
+    static bool playerIsAlive;
 
     readonly List<GetDraw> drawList = new List<GetDraw>();
     readonly List<Tuple<GetSelf, OnUpdate, DrawSelf>> objectList = new List<Tuple<GetSelf, OnUpdate, DrawSelf>>();
@@ -62,12 +67,21 @@ public class Game : MonoBehaviour
 
         material = new Material(Shader.Find("Sprites/Default"));
         fadeMaterial = new Material(material);
-        fadeMaterial.color = Color.gray;
         game.StartCoroutine(game.StartGame());
+
+        var fontsize = 0.037f * Screen.height;
+        guiStyle = new GUIStyle
+        {
+            alignment = TextAnchor.MiddleCenter,
+            fontSize = (int) fontsize,
+            normal = new GUIStyleState {textColor = Color.white}
+        };
     }
 
     IEnumerator StartGame()
     {
+        score = 0f;
+        objectList.Clear();
         objectList.Add(CreatePlayer());
         yield return StartCoroutine(UpdateGame());
     }
@@ -80,9 +94,21 @@ public class Game : MonoBehaviour
         GL.Clear(true, true, Color.black);
     }
 
+    IEnumerator ScoreUpdate()
+    {
+        // ReSharper disable once AssignmentInConditionalExpression
+        while (playerIsAlive = objectList.Any(o => o.Item1().Item4 == ObjectType.Player))
+        {
+            if (playerIsAlive) score += Time.deltaTime;
+            yield return null;
+        }
+    }
+
     IEnumerator UpdateGame()
     {
-        StartCoroutine(SpawnEnemies());
+        StartCoroutine(ScoreUpdate());
+        StartCoroutine(SpawnEnemies(CreateRock, 1 / RockSpawnRate));
+        StartCoroutine(SpawnEnemies(CreateEnemyBullet, 1 / EnemyBulletSpawnRate));
         while (true)
         {
             input.x = Input.GetAxis("Horizontal");
@@ -106,7 +132,7 @@ public class Game : MonoBehaviour
         }
     }
 
-    IEnumerator SpawnEnemies()
+    IEnumerator SpawnEnemies(CreateObject creator, float delay)
     {
         while (true)
         {
@@ -120,10 +146,10 @@ public class Game : MonoBehaviour
             var direction = Random.insideUnitCircle.normalized;
             var rockPosition = center - (Vector3) direction * RockRadius;
             var speed = Random.Range(RockMinSpd, RockMaxSpd);
-            objectList.Add(CreateRock(rockPosition,
+            objectList.Add(creator(rockPosition,
                 Quaternion.Euler(0, 0, Random.Range(0, 180)), speed * direction));
 //            Debug.Log($"Current Object Count : {objectList.Count}");
-            yield return new WaitForSeconds(1 / RockSpawnRate);
+            yield return new WaitForSeconds(delay);
         }
     }
 
@@ -160,7 +186,7 @@ public class Game : MonoBehaviour
         var rotation = Quaternion.Lerp(lastRotation,
             Quaternion.Euler(0, 0, Mathf.Rad2Deg * Mathf.Atan2(-velocity.x, velocity.y)), 0.5f);
 
-        if (TestCollision(player, ObjectType.Rock).Any())
+        if (TestCollision(player, ObjectType.Rock | ObjectType.EnemyBullet).Any())
         {
             CreateParticles(position, PlayerParticleSpeed, PlayerParticleLife, 50, Color.cyan);
             return null;
@@ -320,7 +346,7 @@ public class Game : MonoBehaviour
                 rotation,
                 ObjectType.EnemyBullet,
                 1f / 160,
-                (object) 2f);
+                (object) (RockRadius * 2 / velocity.magnitude));
         return Tuple.Create<GetSelf, OnUpdate, DrawSelf>(getSelf, UpdateEnemyBullet, DrawEnemyBullet);
     }
 
@@ -331,7 +357,7 @@ public class Game : MonoBehaviour
         var velocity = lastBullet.Item2;
         var rotation = lastBullet.Item3;
         var type = lastBullet.Item4;
-        var lifetime = lastBullet.Item5;
+        var lifetime = (float) lastBullet.Item6;
         lifetime = lifetime - Time.deltaTime;
         if (lifetime < 0) return null;
 
@@ -345,7 +371,7 @@ public class Game : MonoBehaviour
         var position = getSelf().Item1;
         var rotation = getSelf().Item3;
         var scale = (1f / 30) * Vector3.one;
-        var color = Color.red;
+        var color = Color.white;
         var verts = new[]
         {
             new Vector3(0, -0.7f), new Vector3(-0.5f, -0.2f), new Vector3(-0.5f, 0.2f), new Vector3(0f, 0.7f),
@@ -439,6 +465,29 @@ public class Game : MonoBehaviour
             var dist = Vector3.Distance(one.Item1, other.Item1);
             if (dist < one.Item5 + other.Item5) yield return obj.Item1;
         }
+    }
+
+    void OnGUI()
+    {
+        var hei = 0.15f * Screen.height;
+        var wid = hei * 2.5f;
+        var scoretext = score.ToString("N2");
+        if (objectList.Any(o => o.Item1().Item4 == ObjectType.Player))
+        {
+            GUI.Label(new Rect(0, 0, wid, hei), scoretext, guiStyle);
+            return;
+        }
+        var boxrect = new Rect(Screen.width / 2 - wid / 2, Screen.height / 2 - hei, wid, hei);
+        var buttonrect = new Rect(Screen.width / 2 - wid / 2, Screen.height / 2, wid, hei);
+        GUI.Box(
+            boxrect,
+            new GUIContent($"Score : {scoretext}", "tooltip?"),
+            guiStyle
+        );
+        var restart = GUI.Button(buttonrect, "Restart", guiStyle);
+        if (!restart) return;
+        StopAllCoroutines();
+        StartCoroutine(StartGame());
     }
 
     void DrawObject(GetDraw toDraw)
